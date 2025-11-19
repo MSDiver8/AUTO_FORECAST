@@ -51,11 +51,8 @@ AUTO_FORECAST/
 - Filter_for_dataset()
 
 ### 🔹 models.py — модели:
-- RW, RWS, RWD, RWDS 
-- TS  
-- ARIMA 
-- custom_ARIMA
-Для построения реальных и псевдовневыборочных прогнозов. 
+- ps_RW, ps_RWS, ps_RWD, ps_RWDS, ps_TS, ps_ARIMA, ps_custom_ARIMA - Для построения псевдовневыборочных прогнозов.
+- RW_real, RWS_real, RWD_real, RWDS_real, TS_real, ARIMA_real, custom_ARIMA_real - Для построения реальных прогнозов.
 
 ### 🔹 get_arima.py
 Логика custom_ARIMA + вспомогательные функции.
