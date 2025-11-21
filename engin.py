@@ -1,17 +1,20 @@
 import models
-
+import warnings
 import pandas as pd
 from math import floor
 from sklearn.metrics import mean_absolute_percentage_error
 
+class Filter_Forecast_Error(Exception):
+    """Ошибка, возникающая при не подходящая частотность или длина ряда."""
+    pass
 class Auto_params_selection_Error(Exception):
     """Ошибка, возникающая при автоматическом выборе параметров для базовых функций прогнозирования"""
     pass
 class Auto_real_forecast_Error(Exception):
     """Ошибка, возникающая при посторение реального прогноза моделями"""
-    
-class Filter_Forecast_Error(Exception):
-    """Ошибка, возникающая при не подходящая частотность или длина ряда."""
+    pass
+class Psevdo_forecast_test_MAPE_Error(Exception):
+    """Ошибка, возникающая в псевдовневыборочном тесте"""
     pass
 
 # Фильтрация рядов для работы с прогнозными моделями. 
@@ -31,11 +34,11 @@ def Time_Serial_filter(Data: dict):
     df = pd.DataFrame(Data['observations'])
     Freq = Data['pandas_frequency']
     
-    if Freq == 'YE' and len(df) >= 16:
+    if Freq == 'YE' and len(df) >= 5:
         return Data
-    elif Freq == 'Q' and len(df) > 12:
+    elif (Freq == 'Q' or 'QE') and len(df) > 5:
         return Data
-    elif Freq == 'ME' and len(df) > 20: # для работы сезонных моделей длина ряда > 12 (период сезонности) + 40%от длины ряда
+    elif Freq == 'ME' and len(df) > 5: # для работы сезонных моделей длина ряда > 12 (период сезонности) + 40%от длины ряда
         return Data
     else:
         raise Filter_Forecast_Error('Не подходящая частотность или длина ряда.', Freq, len(df))#f'Частотноть ряда: {Freq}.', f'Длина ряда: {len(df)}.')
@@ -104,7 +107,7 @@ def Auto_params_selection(Data: dict):
             dic_auto_params['Forecast_horizon'] = horizon_values['horizon_m']   # ряд стандартной длины
         else: 
             dic_auto_params['Forecast_horizon'] = ratio_horizon_to_len     # для коротких рядов
-    elif Freq == 'Q':
+    elif Freq == 'Q' or 'QE':
         if ratio_horizon_to_len > 4:
             dic_auto_params['Forecast_horizon'] = horizon_values['horizon_q']
         else: 
@@ -117,19 +120,23 @@ def Auto_params_selection(Data: dict):
     else:
         raise Auto_params_selection_Error("Невозможно определить горизонт псевдовневыборочного прогноза")
     
-    '''Экспертами устанавливаются фиксированные значения для Deep forecast period'''
-    '''Для коротких рядов допускается взятие 40% от длины ряда'''
+    '''Экспертами устанавливаются фиксированные значения для Deep forecast period
+        Для коротких рядов допускается взятие 40% от длины ряда'''
     
     deep_forecast_values = {'deep_forecast_period_m': 24,
                             'deep_forecast_period_q': 8,
                             'deep_forecast_period_y': 6}
+    '''
+    Для ME пороговое значение 60 точек. для 61 - прогнозный период 24, => 61-24=37 - период оценки.
+    Если период оценки должен быть не менее 24 точек (для сезонных моделей) => ряд длиной не менее 40 точек. 
+    '''
     ratio_deep_forcast_period_to_len = floor(0.4 * len(df)) # Отношение длины псевдовневыборочного прогноза к длине всего ряда. актуально для коротких рядов.
-    if Freq == 'ME':
+    if Freq == 'ME':    
         if ratio_deep_forcast_period_to_len > 24:   # изменено с 12 , так что бы 24 было 40% от ддлины ряда Для других частотнсотей так же
             dic_auto_params['Deep_forecast_period'] = deep_forecast_values['deep_forecast_period_m']
         else: 
             dic_auto_params['Deep_forecast_period'] = ratio_deep_forcast_period_to_len
-    elif Freq == 'Q':
+    elif Freq == 'Q' or 'QE':
         if ratio_deep_forcast_period_to_len > 8:
             dic_auto_params['Deep_forecast_period'] = deep_forecast_values['deep_forecast_period_q']
         else: 
@@ -148,7 +155,7 @@ def Auto_params_selection(Data: dict):
                           'seasonality_y' : None}
     if Freq == 'ME':
         dic_auto_params['Seasonality'] = seasonality_values['seasonality_m']
-    elif Freq == 'Q':
+    elif Freq == 'Q' or 'QE':
         dic_auto_params['Seasonality'] = seasonality_values['seasonality_q']
     elif Freq == 'YE':
         dic_auto_params['Seasonality'] = seasonality_values['seasonality_y']
@@ -163,7 +170,7 @@ def Auto_params_selection(Data: dict):
             dic_auto_params['Window_size'] = windowsize_values['windowsize_m']
         else: 
             dic_auto_params['Window_size'] = ratio_windowsize_to_len
-    elif Freq == 'Q':
+    elif Freq == 'Q' or 'QE':
         if ratio_windowsize_to_len > 4:
             dic_auto_params['Window_size'] = windowsize_values['windowsize_q']
         else: 
@@ -214,6 +221,71 @@ def MAPE_step_by_step(Data: dict,
     
     return Errors
 
+# Функция для формирования набора моделей в зависимости от длины и частотности ряда.
+def select_models_for_series(Data):
+    """
+    Функция для формирования набора моделей в зависимости от длины и частотности ряда.
+    На вход: словарь с данными о ряде
+    На выход: список моделей для которых будет производится псевдовневыборочный тест. 
+    """
+    # Таблица соответствия 
+    rules = {
+        "ME": [
+            (5,  ["RW", "RWD"]),
+            (6,  ["RW", "RWD", "TS"]),
+            (12, ["RW", "RWD", "TS"]),
+            (24, ["RW", "RWD", "TS", "RWS", "RWDS"]),
+            (25, ["RW", "RWD", "TS", "RWS", "RWDS"]),
+            (27, ["RW", "RWD", "TS", "RWS", "RWDS"]),
+            (40, ["RW", "RWD", "TS", "RWS", "RWDS", "ARIMA", "custom_ARIMA"]),
+        ],
+        "QE": [
+            (5,  ["RW", "RWD"]),
+            (6,  ["RW", "RWD", "TS"]),
+            (12, ["RW", "RWD", "TS", "RWS", "RWDS"]),
+            (24, ["RW", "RWD", "TS", "RWS", "RWDS"]),
+            (25, ["RW", "RWD", "TS", "RWS", "RWDS"]),
+            (27, ["RW", "RWD", "TS", "RWS", "RWDS", "ARIMA", "custom_ARIMA"]),
+            (40, ["RW", "RWD", "TS", "RWS", "RWDS", "ARIMA", "custom_ARIMA"]),
+        ],
+        "YE": [
+            (5,  ["RW", "RWD"]),
+            (6,  ["RW", "RWD", "TS"]),
+            (12, ["RW", "RWD", "TS"]),
+            (24, ["RW", "RWD", "TS"]),
+            (25, ["RW", "RWD", "TS", "ARIMA"]),
+            (27, ["RW", "RWD", "TS", "ARIMA", "custom_ARIMA"]),
+            (40, ["RW", "RWD", "TS", "ARIMA", "custom_ARIMA"]),
+        ],
+    }
+
+    #results = []
+
+    n = len(pd.DataFrame(Data['observations'])['obs'])
+    freq = Data['pandas_frequency']
+    # нормализация частоты
+    if freq == "Q":
+        freq = "QE"
+    
+    if freq not in ("ME", "QE", "YE"):
+        raise Psevdo_forecast_test_MAPE_Error("Неизвестная частотность")
+    
+    if freq not in rules:
+        raise Psevdo_forecast_test_MAPE_Error(f"Неизвестная частотность: {freq}")
+    # Находим минимальный порог, который <= n
+    available_models = []
+    for threshold, models in rules[freq]:
+        if n >= threshold:
+            available_models = models  # обновляем (берем наибольший подходящий)
+    
+    #results.append({
+    #    "pandas_frequency": freq,
+    #    "observations_count": n,
+    #    "available_models": available_models
+    #})
+
+    return available_models
+
 # Функция определения минимального MAPE на каждом шаге и формирование списка с "лучшими" моделями для каждого шага прогнозирования
 def Psevdo_forecast_test_MAPE(Data: dict,
                               Deep_forecast_period: int,
@@ -225,7 +297,7 @@ def Psevdo_forecast_test_MAPE(Data: dict,
     Определяет модель с минимальным MAPE на каждом шаге псевдовневыборочного прогноза.
 
     Функция:
-    1) строит псевдопрогнозы для всех доступных моделей;
+    1) строит псевдопрогнозы только для тех моделей, которые доступны в зависимости от длины и частоты ряда;
     2) вычисляет пошаговый MAPE для каждой модели;
     3) на каждом шаге горизонта выбирает модель с минимальной ошибкой;
     4) формирует и возвращает список моделей, оптимальных для каждого шага.
@@ -233,52 +305,49 @@ def Psevdo_forecast_test_MAPE(Data: dict,
     Возвращает:
         list — последовательность имён моделей длиной Forecast_horizon.
     """
-    
-    Freq = Data['pandas_frequency']
-    
     Window_in_years = None # задел на будущее
     
-    if Freq == 'YE' or (len(Data) < 20 and Freq == 'ME'):
-        Forecast_dict_Y = {'RW' : models.ps_RW(Data, Deep_forecast_period, Forecast_horizon),            # строим псевдо прогноз для всех моделей
-                           'RWD' : models.ps_RWD(Data, Deep_forecast_period, Forecast_horizon, Window_in_years),
-                           'TS' : models.ps_TS(Data, Deep_forecast_period, Forecast_horizon, Window_in_years, Reassessment),
-                           'ARIMA' : models.ps_ARIMA(Data, Deep_forecast_period, Forecast_horizon, Window_in_years, Reassessment),
-                           'custom_ARIMA' : models.ps_custom_ARIMA(Data, Deep_forecast_period, Forecast_horizon, Reassessment)
-                        }
-        
-        Erorr_dict_Y = {k : MAPE_step_by_step(Data,
-                                        Forecast_dict_Y[k],
-                                        Deep_forecast_period,
-                                        Forecast_horizon)
-                        for k in Forecast_dict_Y.keys()
-                        }
-    
-        List_of_model_number_Y = [min(Erorr_dict_Y, key=lambda key: Erorr_dict_Y[key][i]) for i in range(Forecast_horizon)] # функция min() примененная к словарю обращается к его ключам. С помощью lambda функции выбирается сначала только первые элементы, затем только вторые и тд. затем функция min() выбирает минимальный элемент среди первых, затем среди вторых и тд, когда выбирается миниму, выражение возвращает ключ в котором он содержится
-        return List_of_model_number_Y
-    
-    else:
-        Forecast_dict = {'RW' : models.ps_RW(Data, Deep_forecast_period, Forecast_horizon),            # строим псевдо прогноз для всех моделей
-                         'RWS' : models.ps_RWS(Data, Deep_forecast_period, Forecast_horizon, Seasonality),
-                         'RWD' : models.ps_RWD(Data, Deep_forecast_period, Forecast_horizon, Window_in_years),
-                         'RWDS' : models.ps_RWDS(Data, Deep_forecast_period, Forecast_horizon, Seasonality, Window_in_years),
-                         'TS' : models.ps_TS(Data, Deep_forecast_period, Forecast_horizon, Window_in_years, Reassessment),
-                         'ARIMA' : models.ps_ARIMA(Data, Deep_forecast_period, Forecast_horizon, Window_in_years, Reassessment),
-                         'custom_ARIMA' : models.ps_custom_ARIMA(Data, Deep_forecast_period, Forecast_horizon, Reassessment)
-                        }
-        
-        Erorr_dict = {k : MAPE_step_by_step(Data,
-                                        Forecast_dict[k],
-                                        Deep_forecast_period,
-                                        Forecast_horizon)
-                        for k in Forecast_dict.keys()
-                        }
+    available_models = select_models_for_series(Data) # определяет список моделей доступный в зависимости от длины ряда
 
-        List_of_model_number = [min(Erorr_dict, key=lambda key: Erorr_dict[key][i]) for i in range(Forecast_horizon)] # функция min() примененная к словарю обращается к его ключам. С помощью lambda функции выбирается сначала только первые элементы, затем только вторые и тд. затем функция min() выбирает минимальный элемент среди первых, затем среди вторых и тд, когда выбирается миниму, выражение возвращает ключ в котором он содержится
-        return List_of_model_number
+    # словарь “кандидатов”, где каждая модель — лямбда-функция
+    candidate_models = {
+        'RW': lambda: models.ps_RW(Data, Deep_forecast_period, Forecast_horizon),
+        'RWS': lambda: models.ps_RWS(Data, Deep_forecast_period, Forecast_horizon, Seasonality),
+        'RWD': lambda: models.ps_RWD(Data, Deep_forecast_period, Forecast_horizon, Window_in_years),
+        'RWDS': lambda: models.ps_RWDS(Data, Deep_forecast_period, Forecast_horizon, Seasonality, Window_in_years),
+        'TS': lambda: models.ps_TS(Data, Deep_forecast_period, Forecast_horizon, Window_in_years, Reassessment),
+        'ARIMA': lambda: models.ps_ARIMA(Data, Deep_forecast_period, Forecast_horizon, Window_in_years, Reassessment),
+        'custom_ARIMA': lambda: models.ps_custom_ARIMA(Data, Deep_forecast_period, Forecast_horizon, Reassessment)
+    }
+
+    Forecast_dict = {}
+
+    for name in available_models:
+        if name not in candidate_models:
+            warnings.warn(f"Модель '{name}' отсутствует в candidate_models и будет пропущена.")
+            continue
+
+        try:
+            Forecast_dict[name] = candidate_models[name]()
+        except Exception as e:
+            warnings.warn(f"Модель '{name}' упала и будет пропущена: {e}")
+    
+    # После цикла:
+    Error_dict = {
+        k: MAPE_step_by_step(
+            Data,
+            Forecast_dict[k],
+            Deep_forecast_period,
+            Forecast_horizon
+        )
+        for k in Forecast_dict
+    }
+    List_of_model_number = [min(Error_dict, key=lambda key: Error_dict[key][i]) for i in range(Forecast_horizon)] # функция min() примененная к словарю обращается к его ключам. С помощью lambda функции выбирается сначала только первые элементы, затем только вторые и тд. затем функция min() выбирает минимальный элемент среди первых, затем среди вторых и тд, когда выбирается миниму, выражение возвращает ключ в котором он содержится
+    return List_of_model_number
     
 # Функция Автоматического прогноза - Конструктор моделей
 def Auto_forecast(Data : dict,
-                  Deep_research : bool=True):
+                  Deep_research : bool=False):
     """
     Автоматически строит комбинированный прогноз временного ряда.
 
@@ -288,6 +357,8 @@ def Auto_forecast(Data : dict,
     3) выполняет псевдовневыборочный тест (MAPE) и выбирает лучшие модели;
     4) пошагово формирует прогноз, используя оптимальную модель для каждого шага;
     5) собирает итоговый результат (даты, шаги, модели, значения) в DataFrame.
+
+    Параметр Deep_research позволяет переоценивать модель на каждом шаге псевдоневыборочного прогноза.
 
     Возвращает:
         pandas.DataFrame — прогноз по шагам с указанием используемых моделей.
