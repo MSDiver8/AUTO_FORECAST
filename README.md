@@ -45,6 +45,7 @@ AUTO_FORECAST/
 Содержит:
 - Auto_forecast()
 - Psevdo_forecast_test_MAPE()
+- select_models_for_series()
 - Auto_params_selection()
 - MAPE_step_by_step()
 - Time_Serial_filter()
