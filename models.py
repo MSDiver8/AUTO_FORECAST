@@ -408,7 +408,7 @@ def RW_real(Data: dict,
                         name = 'predicted')
     
     return(results)
-def RWS_real(Data: dict,       
+def RWS_real(Data: dict,
              Forecast_horizon: int,
              Seasonality: int):
     
@@ -548,7 +548,7 @@ def RWDS_real(Data: dict,
                             name = 'predicted')
         
         return(results)
-def TS_real(Data: dict,            
+def TS_real(Data: dict,
             Forecast_horizon: int,
             Window_in_years: int = None):
     
