@@ -33,6 +33,17 @@ SEASONS = {
     "WE": 52,
     "D": 365,
 }
+LOWLIMITS = {
+    "Y": 15,
+    "YE": 15,
+    "Q": 16,
+    "QE": 16,
+    "M": 24,
+    "ME": 24,
+    "W": 24,
+    "WE": 24,
+    "D": 24,
+}
 
 
 class GetARIMA:
@@ -110,7 +121,7 @@ class GetARIMA:
         if self.freq is None:
             self.freq = "Y"
 
-        assert self.nobs >= max(2 * SEASONS[self.freq], 24), (
+        assert self.nobs >= max(2 * SEASONS[self.freq], LOWLIMITS[self.freq]), (
             "Слишком короткий временной ряд!"
         )
 
@@ -299,7 +310,7 @@ class GetARIMA:
             self.seasons = self._is_seasonal()
 
         if self.seasons:
-            self.max_order = self.seasons - 1
+            self.max_order = min(self.max_order, self.seasons - 1)
 
         d, D, s = self.d, self.D, self.seasons
 
@@ -317,6 +328,8 @@ class GetARIMA:
         _mod = None
 
         for spec in _init:
+            if spec[0][0] > self.max_order or spec[0][2] > self.max_order:
+                continue
             try:
                 _crit = (
                     arima.ARIMA(
